@@ -1,0 +1,493 @@
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'barcode_scanner_screen.dart';
+import 'date_scanner_screen.dart'; // Add this import
+import '../l10n/app_localizations.dart';
+import '../services/barcode_service.dart';
+import '../utils/product_detector.dart';
+
+class AddItemScreen extends StatefulWidget {
+  @override
+  _AddItemScreenState createState() => _AddItemScreenState();
+}
+
+class _AddItemScreenState extends State<AddItemScreen> {
+  final TextEditingController nameController = TextEditingController();
+  final quantityController = TextEditingController(text: '1');
+  final TextEditingController categoryController = TextEditingController();
+  final TextEditingController brandController = TextEditingController();
+  final ProductDetector detector = ProductDetector();
+  DateTime? expirationDate;
+  String? imageUrl;
+  String? scannedBarcode;
+  bool _isLoadingProduct = false;
+
+  // New variables for category dropdown
+  List<String> _existingCategories = [];
+  String? _selectedCategory;
+  bool _isLoadingCategories = true;
+  bool _showDropdown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExistingCategories();
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    quantityController.dispose();
+    categoryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadExistingCategories() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('user_id');
+      final locationId = prefs.getString('location_id');
+
+      if (userId != null && locationId != null) {
+        // Query Firestore to get existing categories for this user/location
+        final querySnapshot = await FirebaseFirestore.instance
+            .collection('inventory_items')
+            .where('userId', isEqualTo: userId)
+            .where('locationId', isEqualTo: locationId)
+            .get();
+
+        Set<String> categoriesSet = {};
+        for (var doc in querySnapshot.docs) {
+          final category = doc.data()['category'] as String?;
+          if (category != null && category.isNotEmpty) {
+            categoriesSet.add(category);
+          }
+        }
+
+        setState(() {
+          _existingCategories = categoriesSet.toList()..sort();
+          _showDropdown = _existingCategories.isNotEmpty;
+          _isLoadingCategories = false;
+        });
+      } else {
+        setState(() {
+          _isLoadingCategories = false;
+        });
+      }
+    } catch (e) {
+      print('Error loading categories: $e');
+      setState(() {
+        _isLoadingCategories = false;
+      });
+    }
+  }
+
+  Future<void> _submit() async {
+    final l10n = AppLocalizations.of(context)!;
+    final name = nameController.text.trim();
+    final quantity = int.tryParse(quantityController.text.trim()) ?? 1;
+
+    // Get category directly from categoryController (works for both dropdown and text field)
+    final category = categoryController.text.trim();
+
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id');
+    final locationId = prefs.getString('location_id');
+
+    if (userId == null || locationId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.missingUserOrLocation)),
+      );
+      return;
+    }
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.itemNameCannotBeEmpty)),
+      );
+      return;
+    }
+    if (quantity <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.quantityMustBePositive)),
+      );
+      return;
+    }
+
+    try {
+      // Save item to Firebase Firestore
+      final itemData = {
+        'name': name,
+        'quantity': quantity,
+        'category': category.isEmpty ? null : category,
+        'expirationDate': expirationDate?.toIso8601String(),
+        'barcode': scannedBarcode,
+        'userId': userId,
+        'locationId': locationId,
+        'imageUrl': '',
+        'createdAt': FieldValue.serverTimestamp(),
+      };
+
+      await FirebaseFirestore.instance.collection('inventory_items').add(itemData);
+
+      Navigator.pop(context);
+    } catch (e) {
+      print("Add item failed: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.failedToSaveItem)),
+      );
+    }
+  }
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now().add(Duration(days: 1)),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(Duration(days: 365 * 5)),
+    );
+    if (picked != null) {
+      setState(() => expirationDate = picked);
+    }
+  }
+
+  // Add this new method for scanning expiration dates
+  Future<void> _scanExpirationDate() async {
+    final l10n = AppLocalizations.of(context)!;
+    try {
+      final scannedDate = await Navigator.push<DateTime>(
+        context,
+        MaterialPageRoute(builder: (_) => const DateScannerScreen()),
+      );
+
+      if (scannedDate != null) {
+        setState(() {
+          expirationDate = scannedDate;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l10n.scaExpniration ?? 'Expiration date scanned successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Date scanning error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.errorScanningDate ?? 'Error scanning expiration date'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _fetchProductInfo(String barcode) async {
+    final l10n = AppLocalizations.of(context)!;
+    setState(() => _isLoadingProduct = true);
+    try {
+      final result = await BarcodeService.lookupBarcode(barcode);
+      if (result != null) {
+        setState(() {
+          scannedBarcode = barcode;
+          nameController.text = result["name"] ?? '';
+          imageUrl = result["image"];
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l10n.productFound(result['name'] ?? l10n.unnamed)),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        setState(() {
+          scannedBarcode = barcode;
+          imageUrl = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l10n.productNotFoundMessage),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Barcode lookup error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.errorFetchingProductInfo),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() => _isLoadingProduct = false);
+    }
+  }
+
+  Future<void> _scanBarcode() async {
+    final code = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()),
+    );
+    if (code != null && code.isNotEmpty) {
+      await _fetchProductInfo(code);
+    }
+  }
+
+  Widget _buildCategoryField() {
+    final l10n = AppLocalizations.of(context)!;
+
+    if (_isLoadingCategories) {
+      return Container(
+        height: 56,
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.grey),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_showDropdown) {
+      return Autocomplete<String>(
+        fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+          // Use our categoryController instead of the default one
+          if (textEditingController.text != categoryController.text) {
+            textEditingController.text = categoryController.text;
+          }
+
+          return TextField(
+            controller: textEditingController,
+            focusNode: focusNode,
+            decoration: InputDecoration(
+              labelText: l10n.category,
+              border: OutlineInputBorder(),
+              suffixIcon: Icon(Icons.arrow_drop_down),
+            ),
+            onChanged: (value) {
+              categoryController.text = value;
+            },
+          );
+        },
+        optionsBuilder: (TextEditingValue textEditingValue) {
+          if (textEditingValue.text.isEmpty) {
+            return _existingCategories;
+          }
+          return _existingCategories.where((category) {
+            return category.toLowerCase().contains(textEditingValue.text.toLowerCase());
+          });
+        },
+        onSelected: (String selection) {
+          categoryController.text = selection;
+        },
+        optionsViewBuilder: (context, onSelected, options) {
+          return Align(
+            alignment: Alignment.topLeft,
+            child: Material(
+              elevation: 4.0,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: 200,
+                  maxWidth: MediaQuery.of(context).size.width - 32,
+                ),
+                child: ListView.builder(
+                  padding: EdgeInsets.zero,
+                  shrinkWrap: true,
+                  itemCount: options.length,
+                  itemBuilder: (BuildContext context, int index) {
+                    final String option = options.elementAt(index);
+                    return InkWell(
+                      onTap: () => onSelected(option),
+                      child: Container(
+                        padding: EdgeInsets.all(16.0),
+                        child: Text(option),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    } else {
+      // Show regular text field when no existing categories
+      return TextField(
+        controller: categoryController,
+        decoration: InputDecoration(
+          labelText: l10n.category,
+          border: OutlineInputBorder(),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return Scaffold(
+      resizeToAvoidBottomInset: true,
+      appBar: AppBar(title: Text(l10n.addItemTitle)),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            children: [
+              if (imageUrl != null)
+                Container(
+                  margin: EdgeInsets.only(bottom: 16),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      imageUrl!,
+                      height: 150,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          height: 150,
+                          child: Icon(Icons.broken_image, size: 50),
+                        );
+                      },
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        return Container(
+                          height: 150,
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ElevatedButton.icon(
+                icon: _isLoadingProduct
+                    ? SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                )
+                    : Icon(Icons.qr_code_scanner),
+                label: Text(_isLoadingProduct ? l10n.loading : l10n.scanBarcode),
+                onPressed: _isLoadingProduct ? null : _scanBarcode,
+              ),
+              SizedBox(height: 16),
+              TextField(
+                controller: nameController,
+                decoration: InputDecoration(
+                  labelText: l10n.itemName,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.remove_circle_outline, color: Colors.red),
+                    onPressed: () {
+                      setState(() {
+                        int currentQuantity = int.tryParse(quantityController.text) ?? 0;
+                        if (currentQuantity > 1) {
+                          quantityController.text = (currentQuantity - 1).toString();
+                        }
+                      });
+                    },
+                  ),
+                  SizedBox(
+                    width: 60,
+                    child: TextField(
+                      controller: quantityController,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        contentPadding: EdgeInsets.zero,
+                        border: InputBorder.none,
+                        labelText: l10n.quantity,
+                      ),
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      onChanged: (text) {
+                        int? parsedQuantity = int.tryParse(text);
+                        if (parsedQuantity != null && parsedQuantity < 1) {
+                          quantityController.text = '1';
+                        }
+                      },
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.add_circle_outline, color: Colors.green),
+                    onPressed: () {
+                      setState(() {
+                        int currentQuantity = int.tryParse(quantityController.text) ?? 0;
+                        quantityController.text = (currentQuantity + 1).toString();
+                      });
+                    },
+                  ),
+                ],
+              ),
+              SizedBox(height: 16),
+              _buildCategoryField(),
+              SizedBox(height: 20),
+              // Updated expiration date section with scanner button
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: Icon(Icons.calendar_today),
+                      onPressed: _pickDate,
+                      style: ElevatedButton.styleFrom(
+                        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      ),
+                      label: Text(
+                        expirationDate == null
+                            ? l10n.pickExpiration
+                            : '${l10n.expiresPrefix} ${expirationDate!.toLocal().toString().split(" ")[0]}',
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  // Date scanner button
+                  ElevatedButton(
+                    onPressed: _scanExpirationDate,
+                    style: ElevatedButton.styleFrom(
+                      padding: EdgeInsets.all(12),
+                      shape: CircleBorder(),
+                      backgroundColor: Theme.of(context).colorScheme.secondary,
+                    ),
+                    child: Icon(
+                      Icons.camera_alt,
+                      color: Colors.white,
+                      size: 24,
+                    ),
+                  ),
+                ],
+              ),
+              if (expirationDate != null)
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      expirationDate = null;
+                    });
+                  },
+                  child: Text(l10n.clearExpirationDate),
+                ),
+              SizedBox(height: 30),
+              ElevatedButton(
+                onPressed: _submit,
+                child: Text(l10n.save),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: Size(double.infinity, 48),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
