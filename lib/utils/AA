@@ -5,9 +5,10 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'barcode_scanner_screen.dart';
-import 'date_scanner_screen.dart'; // Add this import
+import 'date_scanner_screen.dart';
 import '../l10n/app_localizations.dart';
 import '../services/barcode_service.dart';
+import '../utils/product_detector.dart';
 
 class AddItemScreen extends StatefulWidget {
   @override
@@ -16,6 +17,7 @@ class AddItemScreen extends StatefulWidget {
 
 class _AddItemScreenState extends State<AddItemScreen> {
   final nameController = TextEditingController();
+  final brandController = TextEditingController();
   final quantityController = TextEditingController(text: '1');
   final categoryController = TextEditingController();
   DateTime? expirationDate;
@@ -23,7 +25,8 @@ class _AddItemScreenState extends State<AddItemScreen> {
   String? scannedBarcode;
   bool _isLoadingProduct = false;
 
-  // New variables for category dropdown
+  final ProductDetector detector = ProductDetector();
+
   List<String> _existingCategories = [];
   String? _selectedCategory;
   bool _isLoadingCategories = true;
@@ -38,6 +41,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
   @override
   void dispose() {
     nameController.dispose();
+    brandController.dispose();
     quantityController.dispose();
     categoryController.dispose();
     super.dispose();
@@ -50,7 +54,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
       final locationId = prefs.getString('location_id');
 
       if (userId != null && locationId != null) {
-        // Query Firestore to get existing categories for this user/location
         final querySnapshot = await FirebaseFirestore.instance
             .collection('inventory_items')
             .where('userId', isEqualTo: userId)
@@ -86,9 +89,8 @@ class _AddItemScreenState extends State<AddItemScreen> {
   Future<void> _submit() async {
     final l10n = AppLocalizations.of(context)!;
     final name = nameController.text.trim();
+    final brand = brandController.text.trim();
     final quantity = int.tryParse(quantityController.text.trim()) ?? 1;
-
-    // Get category directly from categoryController (works for both dropdown and text field)
     final category = categoryController.text.trim();
 
     final prefs = await SharedPreferences.getInstance();
@@ -115,16 +117,16 @@ class _AddItemScreenState extends State<AddItemScreen> {
     }
 
     try {
-      // Save item to Firebase Firestore
       final itemData = {
         'name': name,
+        'brand': brand.isEmpty ? null : brand,
         'quantity': quantity,
         'category': category.isEmpty ? null : category,
         'expirationDate': expirationDate?.toIso8601String(),
         'barcode': scannedBarcode,
         'userId': userId,
         'locationId': locationId,
-        'imageUrl': '',
+        'imageUrl': imageUrl ?? '',
         'createdAt': FieldValue.serverTimestamp(),
       };
 
@@ -139,47 +141,13 @@ class _AddItemScreenState extends State<AddItemScreen> {
     }
   }
 
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now().add(Duration(days: 1)),
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(Duration(days: 365 * 5)),
+  Future<void> _scanBarcode() async {
+    final code = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()),
     );
-    if (picked != null) {
-      setState(() => expirationDate = picked);
-    }
-  }
-
-  // Add this new method for scanning expiration dates
-  Future<void> _scanExpirationDate() async {
-    final l10n = AppLocalizations.of(context)!;
-    try {
-      final scannedDate = await Navigator.push<DateTime>(
-        context,
-        MaterialPageRoute(builder: (_) => const DateScannerScreen()),
-      );
-
-      if (scannedDate != null) {
-        setState(() {
-          expirationDate = scannedDate;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l10n.scaExpniration ?? 'Expiration date scanned successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      print('Date scanning error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(l10n.errorScanningDate ?? 'Error scanning expiration date'),
-          backgroundColor: Colors.red,
-        ),
-      );
+    if (code != null && code.isNotEmpty) {
+      await _fetchProductInfo(code);
     }
   }
 
@@ -225,14 +193,51 @@ class _AddItemScreenState extends State<AddItemScreen> {
     }
   }
 
-  Future<void> _scanBarcode() async {
-    final code = await Navigator.push<String>(
-      context,
-      MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()),
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now().add(Duration(days: 1)),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(Duration(days: 365 * 5)),
     );
-    if (code != null && code.isNotEmpty) {
-      await _fetchProductInfo(code);
+    if (picked != null) {
+      setState(() => expirationDate = picked);
     }
+  }
+
+  Future<void> _scanExpirationDate() async {
+    final l10n = AppLocalizations.of(context)!;
+    try {
+      final scannedDate = await Navigator.push<DateTime>(
+        context,
+        MaterialPageRoute(builder: (_) => const DateScannerScreen()),
+      );
+
+      if (scannedDate != null) {
+        setState(() {
+          expirationDate = scannedDate;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l10n.scaExpniration ?? 'Expiration date scanned successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Date scanning error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.errorScanningDate ?? 'Error scanning expiration date'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<String> _simulateScan() async {
+    return Future.value("Estee Lauder advanced night repair serum");
   }
 
   Widget _buildCategoryField() {
@@ -254,7 +259,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
     if (_showDropdown) {
       return Autocomplete<String>(
         fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
-          // Use our categoryController instead of the default one
           if (textEditingController.text != categoryController.text) {
             textEditingController.text = categoryController.text;
           }
@@ -314,7 +318,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
         },
       );
     } else {
-      // Show regular text field when no existing categories
       return TextField(
         controller: categoryController,
         decoration: InputDecoration(
@@ -364,19 +367,42 @@ class _AddItemScreenState extends State<AddItemScreen> {
               ElevatedButton.icon(
                 icon: _isLoadingProduct
                     ? SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
                     : Icon(Icons.qr_code_scanner),
                 label: Text(_isLoadingProduct ? l10n.loading : l10n.scanBarcode),
                 onPressed: _isLoadingProduct ? null : _scanBarcode,
+              ),
+              SizedBox(height: 16),
+              ElevatedButton.icon(
+                icon: Icon(Icons.lightbulb),
+                label: Text("Scan Product Info"),
+                onPressed: () async {
+                  final scannedText = await _simulateScan();
+                  await detector.loadData();
+                  final result = detector.detect(scannedText);
+                  setState(() {
+                    nameController.text = result['product_name'] ?? '';
+                    brandController.text = result['brand'] ?? '';
+                    categoryController.text = result['category'] ?? '';
+                  });
+                },
               ),
               SizedBox(height: 16),
               TextField(
                 controller: nameController,
                 decoration: InputDecoration(
                   labelText: l10n.itemName,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              SizedBox(height: 16),
+              TextField(
+                controller: brandController,
+                decoration: InputDecoration(
+                  labelText: 'Brand',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -430,7 +456,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
               SizedBox(height: 16),
               _buildCategoryField(),
               SizedBox(height: 20),
-              // Updated expiration date section with scanner button
               Row(
                 children: [
                   Expanded(
@@ -448,7 +473,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
                     ),
                   ),
                   SizedBox(width: 8),
-                  // Date scanner button
                   ElevatedButton(
                     onPressed: _scanExpirationDate,
                     style: ElevatedButton.styleFrom(
