@@ -1,3 +1,5 @@
+// lib/utils/product_detector.dart
+
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,7 +16,6 @@ class ProductDetector {
   late List<String> _brands;
   late Map<String, String> _categories;
 
-  /// Load and cache brand and category lists from GitHub or cache
   Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -26,7 +27,6 @@ class ProductDetector {
         _brands = List<String>.from(json.decode(utf8.decode(brandRes.bodyBytes)));
         _categories = Map<String, String>.from(json.decode(utf8.decode(catRes.bodyBytes)));
 
-        // Cache them
         await prefs.setString(brandsCacheKey, json.encode(_brands));
         await prefs.setString(categoriesCacheKey, json.encode(_categories));
         return;
@@ -40,9 +40,8 @@ class ProductDetector {
     _categories = catCache != null ? Map<String, String>.from(json.decode(catCache)) : {};
   }
 
-  /// Detect product info from a scanned string
   Map<String, String> detect(String rawText) {
-    final words = rawText.trim().split(RegExp(r'\s+'));
+    final words = rawText.trim().split(RegExp(r'\\s+'));
 
     String brand = words.firstWhere(
       (w) => _brands.any((b) => b.toLowerCase() == w.toLowerCase()),
