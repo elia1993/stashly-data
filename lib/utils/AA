@@ -20,7 +20,6 @@ class AddItemScreen extends StatefulWidget {
 
 class _AddItemScreenState extends State<AddItemScreen> {
   final nameController = TextEditingController();
-  final brandController = TextEditingController();
   final quantityController = TextEditingController(text: '1');
   final categoryController = TextEditingController();
   DateTime? expirationDate;
@@ -42,15 +41,14 @@ class _AddItemScreenState extends State<AddItemScreen> {
     final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
     textRecognizer.close();
 
-    final scannedText = recognizedText.text;
+    final scannedText = recognizedText.text.replaceAll('\n', ' ').trim();
 
     await detector.loadData();
     final result = detector.detect(scannedText);
 
     setState(() {
-      nameController.text = result['product_name'] ?? '';
-      brandController.text = result['brand'] ?? '';
-      categoryController.text = result['category'] ?? '';
+      nameController.text = "${result['product_name']} ${result['brand'] ?? ''}".trim();
+      categoryController.text = result['category'] ?? 'unknown';
       _isScanningText = false;
     });
   }
@@ -105,11 +103,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
                 decoration: InputDecoration(labelText: l10n.itemName, border: OutlineInputBorder()),
               ),
               SizedBox(height: 16),
-              TextField(
-                controller: brandController,
-                decoration: InputDecoration(labelText: 'Brand', border: OutlineInputBorder()),
-              ),
-              SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -159,40 +152,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
                 controller: categoryController,
                 decoration: InputDecoration(labelText: l10n.category, border: OutlineInputBorder()),
               ),
-              SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      icon: Icon(Icons.calendar_today),
-                      onPressed: _pickDate,
-                      style: ElevatedButton.styleFrom(
-                        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      ),
-                      label: Text(
-                        expirationDate == null
-                            ? l10n.pickExpiration
-                            : '${l10n.expiresPrefix} ${expirationDate!.toLocal().toString().split(" ")[0]}',
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: _scanExpirationDate,
-                    style: ElevatedButton.styleFrom(
-                      padding: EdgeInsets.all(12),
-                      shape: CircleBorder(),
-                      backgroundColor: Theme.of(context).colorScheme.secondary,
-                    ),
-                    child: Icon(Icons.camera_alt, color: Colors.white, size: 24),
-                  ),
-                ],
-              ),
-              if (expirationDate != null)
-                TextButton(
-                  onPressed: () => setState(() => expirationDate = null),
-                  child: Text(l10n.clearExpirationDate),
-                ),
               SizedBox(height: 30),
               ElevatedButton(
                 onPressed: _submit,
@@ -209,7 +168,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
   Future<void> _submit() async {
     final l10n = AppLocalizations.of(context)!;
     final name = nameController.text.trim();
-    final brand = brandController.text.trim();
     final quantity = int.tryParse(quantityController.text.trim()) ?? 1;
     final category = categoryController.text.trim();
 
@@ -239,7 +197,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
     try {
       final itemData = {
         'name': name,
-        'brand': brand,
         'quantity': quantity,
         'category': category,
         'expirationDate': expirationDate?.toIso8601String(),
@@ -309,49 +266,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
       );
     } finally {
       setState(() => _isLoadingProduct = false);
-    }
-  }
-
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now().add(Duration(days: 1)),
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(Duration(days: 365 * 5)),
-    );
-    if (picked != null) {
-      setState(() => expirationDate = picked);
-    }
-  }
-
-  Future<void> _scanExpirationDate() async {
-    final l10n = AppLocalizations.of(context)!;
-    try {
-      final scannedDate = await Navigator.push<DateTime>(
-        context,
-        MaterialPageRoute(builder: (_) => const DateScannerScreen()),
-      );
-
-      if (scannedDate != null) {
-        setState(() {
-          expirationDate = scannedDate;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l10n.scaExpniration ?? 'Expiration date scanned successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      print('Date scanning error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(l10n.errorScanningDate ?? 'Error scanning expiration date'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
 }
