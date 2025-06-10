@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -15,7 +14,7 @@ class ProductDetector {
   late List<String> _brands;
   late Map<String, String> _categories;
 
-  /// Load and cache brand and category lists from GitHub or local cache
+  /// Load and cache brand and category lists from GitHub or cache
   Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -32,11 +31,8 @@ class ProductDetector {
         await prefs.setString(categoriesCacheKey, json.encode(_categories));
         return;
       }
-    } catch (_) {
-      // Ignore errors and try cache
-    }
+    } catch (_) {}
 
-    // Load from cache fallback
     final brandCache = prefs.getString(brandsCacheKey);
     final catCache = prefs.getString(categoriesCacheKey);
 
@@ -48,22 +44,17 @@ class ProductDetector {
   Map<String, String> detect(String rawText) {
     final words = rawText.trim().split(RegExp(r'\s+'));
 
-    // Detect brand
     String brand = words.firstWhere(
       (w) => _brands.any((b) => b.toLowerCase() == w.toLowerCase()),
       orElse: () => '',
     );
 
-    // Detect category keyword
     String categoryKeyword = words.firstWhere(
       (w) => _categories.containsKey(w.toLowerCase()),
       orElse: () => '',
     );
 
-    // Build product name (excluding brand if detected)
     String productName = words.where((w) => w != brand).join(' ');
-
-    // Final category match
     String category = _categories[categoryKeyword.toLowerCase()] ?? 'unknown';
 
     return {
